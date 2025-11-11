@@ -1,8 +1,9 @@
 import yfinance as yf
 import matplotlib.pyplot as plt
 import math
+import sys
 
-def calculatePeriodReturn(ticker_data):
+def calculatePeriodReturn(ticker_data, ticker):
     period_start_price = ticker_data["Close", ticker].iloc[0]
     period_end_price = ticker_data["Close", ticker].iloc[-1]
 
@@ -23,10 +24,14 @@ def applyMovingAverageCrossover(ticker_data, ticker, short_term_moving_average, 
     ticker_data["Crossover", ticker] = ticker_data["Trend", ticker].diff()
     return ticker_data
 
-def runMovingAverageCrossoverStrategy(ticker_data, ticker, initial_cash): 
-    current_cash = initial_cash
-    position = 0
+def runMovingAverageCrossoverStrategy(ticker_data, ticker, net_deposits): 
+    current_balance = net_deposits
+    if (current_balance <= 0):
+        print("\nError: Initial balance must be greater than zero.\n")
+        sys.exit(1)
+    position_size = 0
     trade_logs = []
+    equity_curve = []
 
     for row in ticker_data.iterrows():
 
@@ -34,32 +39,34 @@ def runMovingAverageCrossoverStrategy(ticker_data, ticker, initial_cash):
         row_price = row[1]["Close", ticker]
         row_crossover = row[1]["Crossover", ticker]
         
-        if (row_crossover == 2 and position == 0):
-            position = math.floor(current_cash / row_price)
-            current_cash = current_cash - (position * row_price)
-            trade_log = str(row_date) + ", " + "BUY " + ", " + str(position) + ", " + str(round(current_cash, 2)) + ", " + str(round(row_price, 2))
+        if (row_crossover == 2 and position_size == 0):
+            position_size = math.floor(current_balance / row_price)
+            current_balance = current_balance - (position_size * row_price)
+            trade_log = str(row_date) + ", " + "BUY " + ", " + str(position_size) + ", " + str(round(current_balance, 2)) + ", " + str(round(row_price, 2))
             trade_logs.append(trade_log)
-
-        elif (row_crossover == -2 and position != 0):
-            current_cash = current_cash + (position * row_price)
-            position = 0
-            trade_log = str(row_date) + ", " + "SELL" + ", " + str(position) + ", " + str(round(current_cash, 2)) + ", " + str(round(row_price, 2))
-
+        elif (row_crossover == -2 and position_size != 0):
+            current_balance = current_balance + (position_size * row_price)
+            position_size = 0
+            trade_log = str(row_date) + ", " + "SELL" + ", " + str(position_size) + ", " + str(round(current_balance, 2)) + ", " + str(round(row_price, 2))
             trade_logs.append(trade_log)
+        
+        portfolio_value = current_balance + position_size * row_price
+        equity_curve.append((row_date, portfolio_value))
 
-    if (position != 0):
+    if (position_size != 0):
         final_row_date = ticker_data.index[-1].date()
         final_row_price = ticker_data["Close", ticker].iloc[-1]
-        current_cash = current_cash + (position * final_row_price)
-        position = 0
-        trade_log = str(final_row_date) + ", " + "EOP SELL" + ", " + str(position) + ", " + str(round(current_cash, 2)) + ", " + str(round(final_row_price, 2))
+        current_balance = current_balance + (position_size * final_row_price)
+        position_size = 0
+        trade_log = str(final_row_date) + ", " + "EOP SELL" + ", " + str(position_size) + ", " + str(round(current_balance, 2)) + ", " + str(round(final_row_price, 2))
         trade_logs.append(trade_log)
+        equity_curve.append((final_row_date, current_balance))
 
-    return trade_logs, current_cash
+    return trade_logs, current_balance, equity_curve
 
-def displayChart(ticker_data, ticker, short_term_moving_average, long_term_moving_average, period):
-    plt.figure(figsize = (15, 10))
-    period_return = calculatePeriodReturn(ticker_data)
+def buildChart(ticker_data, ticker, short_term_moving_average, long_term_moving_average, period):
+    plt.figure(figsize = (10, 5))
+    period_return = calculatePeriodReturn(ticker_data, ticker)
 
     plt.plot(ticker_data.index, ticker_data["Close", ticker], label = ticker, color = "black", linewidth = 2, zorder = 1) # valid colours are red, green, blue, orange, purple, yellow, pink, cyan, magenta, brown, gray, black, white
     plt.plot(ticker_data.index, ticker_data[str(short_term_moving_average) + " MA", ticker], label = str(short_term_moving_average) + "-day MA", color = "cyan", zorder = 2)
@@ -84,54 +91,109 @@ def displayChart(ticker_data, ticker, short_term_moving_average, long_term_movin
     plt.ylabel("Price (" + ticker_currency + ")")
     plt.legend(loc="upper left")
     plt.grid(True)
-    plt.show()
 
 def displayTradeLogs(trade_logs):
-    print("----------------------------------------------------------------")
-    print(f"{'DATE':<12} {'ACTION':<12} {'POSITION':<12} {'PRICE':<12} {'CASH':<12}")
-    print("----------------------------------------------------------------")
+    if (len(trade_logs) != 0):
+        print(f"{'Date':<12} {'Action':<12} {'Position':<12} {'Price':<12} {'Balance':<12}")
+        print("----------------------------------------------------------------")
 
-    for trade_log in trade_logs:
-        date, action, position, current_cash, price = trade_log.split(", ")
-        print(f"{date:<12} {action:<12} {position:<12} {price:<12} {current_cash:<12}")
-    print("----------------------------------------------------------------")
+        for trade_log in trade_logs:
+            date, action, position_size, current_balance, price = trade_log.split(", ")
+            print(f"{date:<12} {action:<12} {position_size:<12} {price:<12} {current_balance:<12}")
+    else:
+        print("No trades were executed during this period.")
 
-ticker = "bfly"
-ticker = ticker.upper()
-period = "10y" #valid periods are 1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y, ytd, max
+def displayStrategySummary(trade_logs, current_balance, net_deposits):
+    print("\n================================================================")
+    print("                  MA Crossover Strategy Summary                   ")
+    displayTradeLogs(trade_logs)
+    total_trades = int(len(trade_logs) / 2)
+    print("\nTotal trades: " + str(total_trades))
 
-ticker_data = yf.download(ticker, period = period, auto_adjust = True, progress = False)[["Close"]] #fetch closing price data with yfinance
+    if (total_trades != 0):
+        winning_trades = 0
+        i = 0
+        while (i < len(trade_logs)):
+            _, _, _, _, price_i = trade_logs[i].split(", ")
+            _, _, _, _, price_next = trade_logs[i + 1].split(", ")
+            if (float(price_next) > float(price_i)):
+                winning_trades += 1
+            i += 2
+        win_rate = winning_trades / total_trades * 100
+        print("Win rate: " + str(round(win_rate, 2)) + "%")
+
+    print("Net deposits: " + str(round(net_deposits, 2)))
+    print("Current balance: " + str(round(current_balance, 2)))
+
+    total_profit_and_loss = float(current_balance) - net_deposits
+
+    if (total_profit_and_loss > 0):
+        total_profit_and_loss_prefix = " +"
+    else:
+        total_profit_and_loss_prefix = " "
+    print("Total P&L:" + total_profit_and_loss_prefix + str(round(total_profit_and_loss, 2)))
+
+    simple_rate_of_return = total_profit_and_loss / net_deposits * 100
+    if (simple_rate_of_return > 0):
+        simple_rate_of_return_prefix = " +"
+    else:
+        simple_rate_of_return_prefix = " "
+    print("Simple rate of return:" + simple_rate_of_return_prefix + str(round(simple_rate_of_return, 2)) + "%")
+
+    print("================================================================")
+
+def buildEquityCurve(equity_curve, ticker_data, ticker):
+    dates = []
+    values = []
+    for date, value in equity_curve:
+        dates.append(date)
+        values.append(value)    
+    
+    plt.figure(figsize=(10,5))
+    plt.plot(dates, values, label="Portfolio Value", color="blue")
+
+    strategy_return = (round(values[-1], 2) - round(values[0], 2)) / round(values[0], 2) * 100
+    if (strategy_return > 0):
+        strategy_return_prefix = " +"
+    else:
+        strategy_return_prefix = " "
+    plt.title("MA Crossover Strategy Equity Curve (Return:" + strategy_return_prefix + str(round(strategy_return, 2)) + "%)")
+    
+    period_start_date = ticker_data.index[0].date()
+    period_end_date = ticker_data.index[-1].date()
+    plt.xlabel("Date (" + str(period_start_date) + " to " + str(period_end_date) + ")")    
+    
+    ticker_info = yf.Ticker(ticker).info    
+    ticker_currency = ticker_info["currency"]
+    plt.ylabel("Portfolio Value (" + ticker_currency + ")")
+    plt.grid(True)
+    plt.legend()
+
+ticker = input("\nEnter ticker: ").upper()
+period = input("Enter period: ")
+
+try:
+    ticker_data = yf.download(ticker, period = period, auto_adjust = True, progress = False)[["Close"]] #fetch closing price data with yfinance
+    if (ticker_data.empty):
+        print("Error: Data could not be downloaded for " + ticker + ".\n")
+        sys.exit(1)
+except Exception as e:
+    print("\nError: Data could not be downloaded for " + ticker + " - " + str(e) + ".\n")
+    sys.exit(1)
 
 short_term_moving_average = 50
 long_term_moving_average = 200
 
 ticker_data = applyMovingAverageCrossover(ticker_data, ticker, short_term_moving_average, long_term_moving_average)
 
-initial_cash = 100000
-trade_logs, current_cash = runMovingAverageCrossoverStrategy(ticker_data, ticker, initial_cash)
+net_deposits = 10000
+trade_logs, current_balance, equity_curve = runMovingAverageCrossoverStrategy(ticker_data, ticker, net_deposits)
 
-print("================================================================")
-print("                        Strategy Summary                        ")
+displayStrategySummary(trade_logs, current_balance, net_deposits)
 
-
-displayTradeLogs(trade_logs)
-
-total_return = float(current_cash) - initial_cash
-simple_rate_of_return = total_return / initial_cash * 100
-print("Net deposits: " + str(round(initial_cash, 2)))
-print("Cash: " + str(round(current_cash, 2)))
-
-if (total_return > 0):
-    total_return_prefix = " +"
-else:
-    total_return_prefix = " "
-print("Total P&L:" + total_return_prefix + str(round(total_return, 2)))
-
-if (simple_rate_of_return > 0):
-    simple_rate_of_return_prefix = " +"
-else:
-    simple_rate_of_return_prefix = " "
-print("Simple rate of return:" + simple_rate_of_return_prefix + str(round(simple_rate_of_return, 2)) + " %")
-print("================================================================")
-
-displayChart(ticker_data, ticker, short_term_moving_average, long_term_moving_average, period)
+display_chart = input("Display charts? (y/n): ").lower()
+if (display_chart == "y"):
+    print("\nLoading Charts...\n")
+    buildChart(ticker_data, ticker, short_term_moving_average, long_term_moving_average, period)
+    buildEquityCurve(equity_curve, ticker_data, ticker)
+    plt.show()
